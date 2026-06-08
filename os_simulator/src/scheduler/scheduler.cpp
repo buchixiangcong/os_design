@@ -36,9 +36,7 @@ std::string Scheduler::execute_one_tick() {
     LockGuard lock(mutex_);  // 持有锁确保原子性
 
     // === 第一步：扫描队列，选出下一个要运行的进程 ===
-    log << "\n╔══════════════════════════════════════════╗\n";
-    log << "║          MLFQ 调度决策 — 单步执行         ║\n";
-    log << "╚══════════════════════════════════════════╝\n\n";
+    log << "\n========== MLFQ 调度决策 - 单步执行 ==========\n\n";
 
     // 打印队列快照
     log << "[队列快照]\n" << mlfq_.to_string() << "\n";
@@ -97,12 +95,12 @@ std::string Scheduler::execute_one_tick() {
             // 调整优先级到新队列范围
             pcb->priority = new_prio_min;
             mlfq_.enqueue(next_pid, pcb->priority);
-            log << "  ⚠ 时间片耗尽! 降级: Q" << current_level
+            log << "  [降级] 时间片耗尽! Q" << current_level
                 << " -> Q" << new_level << " (新优先级: " << pcb->priority << ")\n";
         } else {
             // 已在最低队列，轮转到队尾
             mlfq_.enqueue(next_pid, pcb->priority);
-            log << "  ⚡ 已是最低队列，轮转到队尾\n";
+            log << "  [轮转] 已是最低队列，回到队尾\n";
         }
 
         // 进程执行后变为 READY

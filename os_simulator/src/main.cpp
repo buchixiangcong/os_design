@@ -57,19 +57,43 @@ ParsedCommand parse_line(const std::string& line) {
 void print_help() {
     const char* help =
     "\n========== 可用命令 ==========\n"
-    "  --- 账户 ---          --- 进程管理 ---\n"
-    "  register <u> <p>       create_pcb <n> <pri> [mem] [ppid]\n"
-    "  login <u> <p>          kill_pcb <pid>\n"
-    "  logout                 block_pcb / wakeup_pcb <pid>\n"
-    "                         show_pcb / list_pcb / ptree\n"
-    "  --- 调度器 ---         suspend / resume / renice <pid> <pri>\n"
-    "  start_sched / stop_sched / restart_sched\n"
-    "  step                    --- 内存管理 ---\n"
-    "                         alloc / free_mem / show_mem / compact\n"
-    "  --- 持久化 ---         mem_stat / set_alloc_algo <FF|BF|WF>\n"
-    "  save / load            pgfault <pid> / swap_out <pid>\n"
-    "  --- 可视化 ---         --- 系统 ---\n"
-    "  overview               help / exit\n"
+    "  --- 账户管理 ---\n"
+    "  register <user> <pass>  - 注册新用户\n"
+    "  login <user> <pass>     - 用户登录\n"
+    "  logout                  - 用户登出\n"
+    "  --- 进程管理 ---\n"
+    "  create_pcb <name> <pri> [mem] [ppid] - 创建进程\n"
+    "  kill_pcb <pid>           - 终止进程\n"
+    "  block_pcb <pid>          - 阻塞进程\n"
+    "  wakeup_pcb <pid>         - 唤醒进程\n"
+    "  show_pcb <pid>           - 查看进程详情\n"
+    "  list_pcb                 - 列出所有进程\n"
+    "  ptree                    - 进程树形结构\n"
+    "  suspend <pid>            - 挂起进程\n"
+    "  resume <pid>             - 恢复进程\n"
+    "  renice <pid> <pri>       - 修改优先级\n"
+    "  --- 调度器 ---\n"
+    "  start_sched              - 启动自动调度\n"
+    "  stop_sched               - 暂停调度\n"
+    "  restart_sched            - 重启调度\n"
+    "  step                     - 单步执行调度\n"
+    "  --- 内存管理 ---\n"
+    "  alloc <size>             - 分配内存\n"
+    "  free_mem <addr>          - 释放内存\n"
+    "  show_mem                 - 显示内存布局\n"
+    "  compact                  - 内存碎片紧缩\n"
+    "  mem_stat                 - 内存使用统计\n"
+    "  set_alloc_algo <FF|BF|WF>- 切换分配算法\n"
+    "  pgfault <pid>            - 模拟缺页中断\n"
+    "  swap_out <pid>           - 进程内存换出\n"
+    "  --- 持久化 ---\n"
+    "  save                     - 保存系统状态\n"
+    "  load                     - 加载系统状态\n"
+    "  --- 可视化 ---\n"
+    "  overview                 - 系统全景视图\n"
+    "  --- 系统 ---\n"
+    "  help                     - 显示此帮助\n"
+    "  exit                     - 退出系统\n"
     "===========================================\n";
     std::cout << help << std::endl;
 }
@@ -266,9 +290,7 @@ unsigned __stdcall backend_worker(void*) {
     while (g_running) {
         Message msg = g_msg_queue.pop();
         if (msg.raw.empty() && msg.type == MessageType::CMD_UNKNOWN) break;
-        ParsedCommand pc;
-        pc.cmd = msgtype_to_string(msg.type);
-        pc.args = msg.args;
+        ParsedCommand pc = parse_line(msg.raw);
         dispatch(pc);
     }
     std::cout << "[系统] 后台线程退出。" << std::endl;
@@ -299,12 +321,17 @@ unsigned __stdcall file_watcher(void*) {
 // 主函数
 // ============================================================
 int main() {
+    // 设置控制台为 UTF-8 编码（修复中文/特殊字符乱码）
+    #ifdef _WIN32
+    system("chcp 65001 > nul");
+    #endif
+
     std::cout << R"(
-╔══════════════════════════════════════════════════╗
-║      操作系统核心模拟器 - OS Simulator v1.0       ║
-║      北京林业大学 信息学院 操作系统A课程设计       ║
-║      多线程 | MLFQ调度 | 动态分区 | 持久化        ║
-╚══════════════════════════════════════════════════╝
+==================================================
+      操作系统核心模拟器 - OS Simulator v1.0
+      北京林业大学 信息学院 操作系统A课程设计
+      多线程 | MLFQ调度 | 动态分区 | 持久化
+==================================================
 输入 'help' 查看命令，'exit' 退出系统
 )" << std::endl;
 

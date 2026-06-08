@@ -9,6 +9,11 @@
 #include <ctime>
 #include <iostream>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <io.h>        // _fileno, _get_osfhandle
+#endif
+
 // C++14 要求 constexpr static 成员有外部定义
 constexpr uint32_t Persistence::MAGIC;
 constexpr uint32_t Persistence::VERSION;
@@ -65,6 +70,22 @@ std::string Persistence::save(
 
     FILE* f = fopen(path.c_str(), "wb");
     if (!f) return "[持久化] 无法打开文件 '" + path + "'。";
+
+    // ★ 文件锁：防止多实例同时写入 state.bin
+    #ifdef _WIN32
+    HANDLE hFile = (HANDLE)_get_osfhandle(_fileno(f));
+    bool locked = false;
+    if (hFile != INVALID_HANDLE_VALUE) {
+        OVERLAPPED ov = {0};
+        if (LockFileEx(hFile, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
+                        0, MAXDWORD, 0, &ov)) {
+            locked = true;
+        } else {
+            fclose(f);
+            return "[持久化] 文件正被其他实例写入，请稍后重试。";
+        }
+    }
+    #endif
 
     bool ok = true;
 
@@ -138,6 +159,13 @@ std::string Persistence::save(
     // ---- Alloc Counter ----
     ok = ok && (fwrite(&alloc_counter, 4, 1, f) == 1);
 
+    // 解锁并关闭
+    #ifdef _WIN32
+    if (locked) {
+        OVERLAPPED ov = {0};
+        UnlockFileEx(hFile, 0, MAXDWORD, 0, &ov);
+    }
+    #endif
     fclose(f);
 
     if (ok) {
