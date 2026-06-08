@@ -1,27 +1,4 @@
 #include "memory/memory_manager.h"
-#include <iostream>
-#include <sstream>
-#include <algorithm>
-
-// ============================================================
-// 构造与析构
-// ============================================================
-
-MemoryManager::MemoryManager()
-    : current_algo_(MemAlgo::FIRST_FIT)
-{
-    // 初始化：一个 1024KB 的空闲块覆盖全部地址空间
-    head_ = new MemoryBlock(0, TOTAL_MEMORY, true);
-}
-
-MemoryManager::~MemoryManager() {
-    // 释放整个链表
-    while (head_) {
-        MemoryBlock* next = head_->next;
-        delete head_;
-        head_ = next;
-    }
-}
 
 void MemoryManager::reset() {
     LockGuard lock(mutex_);
@@ -335,11 +312,6 @@ void MemoryManager::append_block(int addr, int size, bool free, int pid) {
     auto* blk = new MemoryBlock(addr, size, free, pid);
     curr->next = blk;
     blk->prev = curr;
-}
-
-void MemoryManager::set_alloc_algo(MemAlgo algo) {
-    LockGuard lock(mutex_);
-    current_algo_ = algo;
 }
 
 std::string MemoryManager::pgfault(int pid) const {

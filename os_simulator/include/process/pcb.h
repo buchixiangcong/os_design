@@ -3,33 +3,49 @@
 
 #include <string>
 #include <vector>
-#include <cstdint>
+#include <sstream>
+#include <iomanip>
 #include "common/types.h"
 
 /// 进程控制块 (PCB)
 struct PCB {
-    int pid;                   // 进程ID
-    int ppid;                  // 父进程ID (0 表示 init 或无父进程)
-    std::string name;          // 进程名称
-    ProcessState state;        // 当前状态
-    int priority;              // 优先级 (0-15)
-    int cpu_time;              // 已执行CPU时间（时间片累积）
-    int mem_addr;              // 分配的内存起始地址 (-1 表示未分配)
-    int mem_size;              // 分配的内存大小 (KB, 0 表示未分配)
-    std::vector<int> children; // 子进程PID列表
+    int pid = -1, ppid = 0, priority = 5, cpu_time = 0;
+    int mem_addr = -1, mem_size = 0;
+    std::string name;
+    ProcessState state = ProcessState::CREATED;
+    std::vector<int> children;
 
-    PCB() : pid(-1), ppid(0), name(""), state(ProcessState::CREATED),
-            priority(5), cpu_time(0), mem_addr(-1), mem_size(0) {}
-
+    PCB() = default;
     PCB(int id, int parent, const std::string& nm, int pri = 5)
-        : pid(id), ppid(parent), name(nm), state(ProcessState::CREATED),
-          priority(pri), cpu_time(0), mem_addr(-1), mem_size(0) {}
+        : pid(id), ppid(parent), name(nm), priority(pri) {}
 
-    /// 格式化为单行摘要（用于 list_pcb）
-    std::string to_short_string() const;
+    /// 单行摘要（用于 list_pcb）
+    std::string to_short_string() const {
+        std::ostringstream oss;
+        oss << "PID:" << std::setw(4) << pid
+            << "  " << std::setw(10) << state_to_string(state)
+            << "  prio:" << std::setw(2) << priority
+            << "  CPU:" << std::setw(6) << cpu_time
+            << "  mem:" << std::setw(4) << mem_size << "K"
+            << "  " << name;
+        return oss.str();
+    }
 
-    /// 格式化为详细信息（用于 show_pcb）
-    std::string to_detailed_string() const;
+    /// 详细信息（用于 show_pcb）
+    std::string to_detailed_string() const {
+        std::ostringstream oss;
+        oss << "\n========== 进程控制块 (PCB) 详情 ==========\n"
+            << "  PID: " << pid << "  名称: " << name << "\n"
+            << "  父进程: " << ppid << "  状态: " << state_to_string(state) << "\n"
+            << "  优先级: " << priority << "  CPU: " << cpu_time << "\n"
+            << "  内存: " << mem_addr << "KB +" << mem_size << "KB\n"
+            << "  所属MLFQ: Q" << get_queue_level(priority) << "\n"
+            << "  子进程: [";
+        for (size_t i = 0; i < children.size(); ++i)
+            oss << (i ? ", " : "") << children[i];
+        oss << "]\n==========================================\n";
+        return oss.str();
+    }
 };
 
-#endif // PCB_H
+#endif

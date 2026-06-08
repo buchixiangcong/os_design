@@ -2,38 +2,42 @@
 #define IPC_MESSAGE_QUEUE_H
 
 #include <queue>
-#include "ipc/message.h"
+#include <string>
+#include <vector>
+#include "common/types.h"
 #include "common/sync.h"
 
-#ifdef _WIN32
-#include <windows.h>
-#endif
+// ============================================================
+// 线程间通信的消息结构
+// ============================================================
+struct Message {
+    MessageType type = MessageType::CMD_UNKNOWN;
+    std::vector<std::string> args;
+    std::string raw;
+};
 
-/// 线程安全的消息队列（生产者-消费者模式）
-/// 使用轮询方式避免 CONDITION_VARIABLE 兼容性问题
+// ============================================================
+// 线程安全的消息队列（生产者-消费者模式）
+// ============================================================
 class MessageQueue {
 public:
-    MessageQueue();
-    ~MessageQueue();
+    MessageQueue() : shutdown_(false) {}
 
-    // 禁止拷贝
-    MessageQueue(const MessageQueue&) = delete;
-    MessageQueue& operator=(const MessageQueue&) = delete;
+    void push(const Message& msg) {
+        LockGuard lock(mutex_);
+        queue_.push(msg);
+    }
 
-    /// 向队列添加消息（生产者 — 前台线程）
-    void push(const Message& msg);
+    Message pop() {
+        while (true) {
+            { LockGuard lock(mutex_);
+              if (!queue_.empty()) { Message m = queue_.front(); queue_.pop(); return m; }
+              if (shutdown_) return Message(); }
+            Sleep(10);  // 避免忙等
+        }
+    }
 
-    /// 从队列取出消息（消费者 — 后台线程，阻塞等待）
-    Message pop();
-
-    /// 尝试非阻塞取消息，空时返回空消息
-    Message try_pop();
-
-    /// 队列是否为空
-    bool empty() const;
-
-    /// 通知关闭，使 pop() 立即返回空消息
-    void shutdown();
+    void shutdown() { LockGuard lock(mutex_); shutdown_ = true; }
 
 private:
     std::queue<Message> queue_;
@@ -41,4 +45,4 @@ private:
     bool shutdown_;
 };
 
-#endif // IPC_MESSAGE_QUEUE_H
+#endif
