@@ -1,0 +1,19 @@
+# Claude internal state
+.claude/
+
+# Build output
+os_simulator/build/
+
+# IDE
+.vscode/
+.idea/
+
+# System files
+Thumbs.db
+Desktop.ini
+
+# Compiled output (keep in project dir just in case)
+*.exe
+*.obj
+*.o
+*.out
