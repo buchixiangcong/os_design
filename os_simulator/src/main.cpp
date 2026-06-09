@@ -340,6 +340,8 @@ int main() {
         int next_pid, dummy;
         Persistence::load(g_process, g_memory, g_scheduler, g_account, next_pid, dummy);
         g_process.set_next_pid(next_pid);
+        struct stat st;
+        if (stat(STATE_FILE, &st) == 0) g_last_save_mtime = st.st_mtime;
         std::cout << "[系统] 从持久化文件恢复状态。" << std::endl;
     } else {
         g_process.init();
