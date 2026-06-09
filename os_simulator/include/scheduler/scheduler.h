@@ -75,8 +75,10 @@ private:
     static unsigned __stdcall sched_thread_func(void* arg);
     #endif
 
-    /// 执行一次调度决策（选进程、推进时间片、状态转换）
-    /// @return 执行日志
+    /// 执行一次自动调度（一行摘要，不刷屏）
+    std::string tick();
+
+    /// 执行一次调度决策（step 用完整诊断输出）
     std::string execute_one_tick();
 
     /// 将进程加入 MLFQ（基于其优先级）

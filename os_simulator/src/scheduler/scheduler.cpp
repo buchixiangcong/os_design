@@ -238,39 +238,81 @@ std::string Scheduler::step() {
 }
 
 // ============================================================
+// 自动调度 — 轻量 tick（一行摘要，不刷屏）
+// ============================================================
+std::string Scheduler::tick() {
+    LockGuard lock(mutex_);
+
+    // 补充 READY 进程到 MLFQ
+    auto pids = proc_mgr_.get_all_pids();
+    for (int pid : pids) {
+        PCB* pcb = proc_mgr_.get_pcb_mutable(pid);
+        if (pcb && pcb->state == ProcessState::READY) {
+            mlfq_.enqueue(pid, pcb->priority);
+        }
+    }
+
+    int pid = mlfq_.pick_and_dequeue();
+    if (pid < 0) return "[调度] 就绪队列为空，等待进程...";
+
+    PCB* pcb = proc_mgr_.get_pcb_mutable(pid);
+    if (!pcb) return "[调度] 错误：进程不存在。";
+
+    int level = get_queue_level(pcb->priority);
+    int slice = MLFQ_TIME_SLICE[level];
+
+    // 切走其他 RUNNING 进程
+    for (int p : proc_mgr_.get_all_pids()) {
+        PCB* o = proc_mgr_.get_pcb_mutable(p);
+        if (o && o->state == ProcessState::RUNNING && p != pid)
+            o->state = ProcessState::READY;
+    }
+
+    pcb->state = ProcessState::RUNNING;
+    pcb->cpu_time += slice;
+
+    // 降级或轮转
+    if (level < MLFQ_LEVELS - 1) {
+        pcb->priority = MLFQ_PRIO_MIN[level + 1];
+        mlfq_.enqueue(pid, pcb->priority);
+    } else {
+        mlfq_.enqueue(pid, pcb->priority);
+    }
+    pcb->state = ProcessState::READY;
+
+    // ★ 一行摘要
+    std::ostringstream oss;
+    oss << "[调度] " << pcb->name << "(PID:" << pid << ") Q" << level
+        << " 执行" << slice << "s |CPU=" << pcb->cpu_time
+        << "| -> Q" << get_queue_level(pcb->priority);
+    return oss.str();
+}
+
+// ============================================================
 // 后台调度线程函数 (Windows)
 // ============================================================
-
 #ifdef _WIN32
 unsigned __stdcall Scheduler::sched_thread_func(void* arg) {
     Scheduler* sched = static_cast<Scheduler*>(arg);
+    std::cout << "[调度] 自动调度开始 (输入 stop_sched 暂停)" << std::endl;
 
+    int tick_count = 0;
     while (sched->running_) {
-        if (sched->paused_) {
-            // 暂停时休眠
-            Sleep(100);
-            continue;
+        if (sched->paused_) { Sleep(100); continue; }
+
+        std::cout << sched->tick() << std::endl;
+
+        // 每 10 次打印队列快照
+        if (++tick_count % 10 == 0) {
+            std::cout << sched->mlfq_.to_string();
         }
 
-        // 确保 MLFQ 中有所有 READY 进程
-        auto pids = sched->proc_mgr_.get_all_pids();
-        for (int pid : pids) {
-            PCB* pcb = sched->proc_mgr_.get_pcb_mutable(pid);
-            if (pcb && pcb->state == ProcessState::READY) {
-                sched->mlfq_.enqueue(pid, pcb->priority);
-            }
-        }
-
-        // 执行一次调度
-        std::string log = sched->execute_one_tick();
-        std::cout << log << std::endl;
-
-        // 等待时间片（可调倍率）
-        int sleep_ms = static_cast<int>(2000 * sched->speed_mult_);
-        if (sleep_ms < 50) sleep_ms = 50;
-        Sleep(sleep_ms);
+        int ms = static_cast<int>(2000 * sched->speed_mult_);
+        if (ms < 200) ms = 200;
+        Sleep(ms);
     }
 
+    std::cout << "[调度] 调度线程退出。" << std::endl;
     return 0;
 }
 #endif
