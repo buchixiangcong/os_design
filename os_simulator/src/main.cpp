@@ -31,6 +31,7 @@ static Scheduler g_scheduler(g_process, g_memory);
 static AccountManager g_account;
 static MessageQueue g_msg_queue;
 static time_t g_last_save_mtime = 0;
+static long   g_last_file_size = 0;   // 辅助检测（mtime 只有 1 秒精度）
 
 // ============================================================
 // 命令行解析（内联，替代原 parser.h/cpp）
@@ -105,7 +106,10 @@ void auto_save() {
     int next_pid = g_process.get_next_pid(), dummy = 0;
     Persistence::save(g_process, g_memory, g_scheduler, g_account, next_pid, dummy);
     struct stat st;
-    if (stat(STATE_FILE, &st) == 0) g_last_save_mtime = st.st_mtime;
+    if (stat(STATE_FILE, &st) == 0) {
+        g_last_save_mtime = st.st_mtime;
+        g_last_file_size = st.st_size;
+    }
 }
 
 // ============================================================
@@ -252,7 +256,7 @@ void dispatch(const ParsedCommand& pc) {
     bool modified = false;
     CmdCtx ctx = { pc, modified };
 
-    // 系统命令
+    // 系统命令（不触发 save）
     if (pc.cmd == "help")        { print_help(); return; }
     if (pc.cmd == "exit")        { std::cout << "[系统] 正在关闭...\n"; g_running = false; g_msg_queue.shutdown(); return; }
 
@@ -277,8 +281,12 @@ void dispatch(const ParsedCommand& pc) {
     else
         std::cout << "[提示] 命令 '" << pc.cmd << "' 尚未实现。" << std::endl;
 
-    // 状态变更后自动持久化（多实例共享）
-    if (modified) auto_save();
+    // 除只读命令外，全部自动持久化（确保多终端实时同步）
+    if (pc.cmd != "help" && pc.cmd != "load" && pc.cmd != "show_pcb" &&
+        pc.cmd != "list_pcb" && pc.cmd != "ptree" && pc.cmd != "show_mem" &&
+        pc.cmd != "mem_stat" && pc.cmd != "overview" && pc.cmd != "exit") {
+        auto_save();
+    }
 }
 
 // ============================================================
@@ -306,12 +314,15 @@ unsigned __stdcall file_watcher(void*) {
     while (g_running) {
         Sleep(500);
         struct stat st;
-        if (stat(STATE_FILE, &st) != 0 || st.st_mtime <= g_last_save_mtime) continue;
+        if (stat(STATE_FILE, &st) != 0) continue;
+        // 时间或大小任一变化即触发同步
+        if (st.st_mtime == g_last_save_mtime && st.st_size == g_last_file_size) continue;
         std::cout << "\n[共享] 外部变更，自动同步..." << std::endl;
         int next_pid, dummy;
         Persistence::load(g_process, g_memory, g_scheduler, g_account, next_pid, dummy);
         g_process.set_next_pid(next_pid);
         g_last_save_mtime = st.st_mtime;
+        g_last_file_size = st.st_size;
     }
     return 0;
 }
@@ -341,10 +352,14 @@ int main() {
         Persistence::load(g_process, g_memory, g_scheduler, g_account, next_pid, dummy);
         g_process.set_next_pid(next_pid);
         struct stat st;
-        if (stat(STATE_FILE, &st) == 0) g_last_save_mtime = st.st_mtime;
+        if (stat(STATE_FILE, &st) == 0) {
+            g_last_save_mtime = st.st_mtime;
+            g_last_file_size = st.st_size;
+        }
         std::cout << "[系统] 从持久化文件恢复状态。" << std::endl;
     } else {
         g_process.init();
+        auto_save();  // 建立初始快照
     }
 
     // 启动后台线程（命令处理器）
@@ -370,13 +385,35 @@ int main() {
         ParsedCommand pc = parse_line(line);
         if (pc.cmd.empty()) continue;
 
-        // 查找消息类型并投递到队列
+        // 账户命令前台直接处理，保证提示符立即更新
+        if (pc.cmd == "register") {
+            if (pc.args.size() >= 2) {
+                auto e = g_account.register_user(pc.args[0], pc.args[1]);
+                std::cout << (e.empty() ? "[账户] '" + pc.args[0] + "' 注册成功！\n" : e + "\n");
+                if (e.empty()) auto_save();  // 同步到其他终端
+            }
+            continue;
+        }
+        if (pc.cmd == "login") {
+            if (pc.args.size() >= 2) {
+                auto e = g_account.login(pc.args[0], pc.args[1]);
+                std::cout << (e.empty() ? "[账户] 欢迎，" + pc.args[0] + "！\n" : e + "\n");
+            }
+            continue;
+        }
+        if (pc.cmd == "logout") {
+            std::cout << "[账户] " << (g_account.is_logged_in()
+                ? "'" + g_account.current_user() + "' 已登出。" : "当前未登录。") << std::endl;
+            g_account.logout();
+            continue;
+        }
+
+        // 其他命令投递到后台队列
         MessageType t = MessageType::CMD_UNKNOWN;
         for (int i = 0; i <= static_cast<int>(MessageType::CMD_EXIT); ++i) {
             if (msgtype_to_string(static_cast<MessageType>(i)) == pc.cmd)
                 { t = static_cast<MessageType>(i); break; }
         }
-
         g_msg_queue.push(Message{t, pc.args, line});
 
         if (pc.cmd == "exit") {

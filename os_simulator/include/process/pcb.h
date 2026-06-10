@@ -11,6 +11,7 @@
 struct PCB {
     int pid = -1, ppid = 0, priority = 5, cpu_time = 0;
     int mem_addr = -1, mem_size = 0;
+    int burst_remain = 3;  // 剩余调度次数，0 自动终止
     std::string name;
     ProcessState state = ProcessState::CREATED;
     std::vector<int> children;

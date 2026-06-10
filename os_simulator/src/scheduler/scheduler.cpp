@@ -85,26 +85,28 @@ std::string Scheduler::execute_one_tick() {
         pcb->cpu_time += time_slice;
         log << "  PID:" << next_pid << " (" << pcb->name << ") 执行 " << time_slice
             << " 秒 (累计CPU: " << pcb->cpu_time << ")\n";
+        pcb->burst_remain--;
+        log << "  剩余调度次数: " << pcb->burst_remain << "\n";
 
-        // === 第三步：处理时间片耗尽后的降级 ===
-        // 如果还有更低优先级的队列可以降入
-        if (current_level < MLFQ_LEVELS - 1) {
-            // 降级到下一级队列
+        // burst_remain 归零 → 自动终止
+        if (pcb->burst_remain <= 0) {
+            mlfq_.remove(next_pid);
+            pcb->state = ProcessState::TERMINATED;
+            log << "  [完成] 任务执行完毕，进程自动终止!\n";
+        }
+        // 降级或轮转
+        else if (current_level < MLFQ_LEVELS - 1) {
             int new_level = current_level + 1;
-            int new_prio_min = MLFQ_PRIO_MIN[new_level];
-            // 调整优先级到新队列范围
-            pcb->priority = new_prio_min;
+            pcb->priority = MLFQ_PRIO_MIN[new_level];
             mlfq_.enqueue(next_pid, pcb->priority);
-            log << "  [降级] 时间片耗尽! Q" << current_level
+            pcb->state = ProcessState::READY;
+            log << "  [降级] Q" << current_level
                 << " -> Q" << new_level << " (新优先级: " << pcb->priority << ")\n";
         } else {
-            // 已在最低队列，轮转到队尾
             mlfq_.enqueue(next_pid, pcb->priority);
+            pcb->state = ProcessState::READY;
             log << "  [轮转] 已是最低队列，回到队尾\n";
         }
-
-        // 进程执行后变为 READY
-        pcb->state = ProcessState::READY;
     } else if (pcb->state == ProcessState::BLOCKED) {
         log << "  PID:" << next_pid << " 处于 BLOCKED 状态，跳过执行。\n";
         mlfq_.enqueue(next_pid, pcb->priority);
@@ -199,7 +201,9 @@ bool Scheduler::stop_sched() {
     }
 #endif
 
-    std::cout << "[调度] 调度器已停止。所有进程和队列状态已冻结。" << std::endl;
+    std::cout << "[调度] 调度器已停止，当前队列:" << std::endl;
+    std::cout << mlfq_.to_string();
+    std::cout << "  用 list_pcb 查看进程最新 CPU 时间" << std::endl;
     return true;
 }
 
@@ -209,9 +213,22 @@ bool Scheduler::restart_sched() {
         return false;
     }
 
+    // 不清空队列，从冻结点原地恢复
+    running_ = true;
     paused_ = false;
-    std::cout << "[调度] 调度器已重启，从冻结状态恢复。" << std::endl;
-    return start_sched();
+    std::cout << "[调度] 从冻结状态恢复，继续调度。" << std::endl;
+    std::cout << mlfq_.to_string();
+
+#ifdef _WIN32
+    sched_thread_ = reinterpret_cast<void*>(
+        _beginthreadex(nullptr, 0, sched_thread_func, this, 0, nullptr));
+    if (!sched_thread_) {
+        running_ = false;
+        std::cout << "[错误] 无法创建调度线程。" << std::endl;
+        return false;
+    }
+#endif
+    return true;
 }
 
 std::string Scheduler::step() {
@@ -270,6 +287,22 @@ std::string Scheduler::tick() {
 
     pcb->state = ProcessState::RUNNING;
     pcb->cpu_time += slice;
+    pcb->burst_remain--;
+
+    std::ostringstream oss;
+    oss << "[调度] " << pcb->name << "(PID:" << pid << ") Q" << level
+        << " 执行" << slice << "s |CPU=" << pcb->cpu_time
+        << "| 剩余=" << pcb->burst_remain;
+
+    // burst_remain 归零 → 进程自动终止
+    if (pcb->burst_remain <= 0) {
+        pcb->state = ProcessState::READY;  // 临时设一下防止 check 报错
+        // 从所有队列移除
+        mlfq_.remove(pid);
+        pcb->state = ProcessState::TERMINATED;
+        oss << " [完成!]";
+        return oss.str();
+    }
 
     // 降级或轮转
     if (level < MLFQ_LEVELS - 1) {
@@ -280,11 +313,7 @@ std::string Scheduler::tick() {
     }
     pcb->state = ProcessState::READY;
 
-    // ★ 一行摘要
-    std::ostringstream oss;
-    oss << "[调度] " << pcb->name << "(PID:" << pid << ") Q" << level
-        << " 执行" << slice << "s |CPU=" << pcb->cpu_time
-        << "| -> Q" << get_queue_level(pcb->priority);
+    oss << " -> Q" << get_queue_level(pcb->priority);
     return oss.str();
 }
 
@@ -294,25 +323,38 @@ std::string Scheduler::tick() {
 #ifdef _WIN32
 unsigned __stdcall Scheduler::sched_thread_func(void* arg) {
     Scheduler* sched = static_cast<Scheduler*>(arg);
-    std::cout << "[调度] 自动调度开始 (输入 stop_sched 暂停)" << std::endl;
 
     int tick_count = 0;
     while (sched->running_) {
         if (sched->paused_) { Sleep(100); continue; }
 
+        // 实时输出调度日志（任务书要求）
         std::cout << sched->tick() << std::endl;
+        ++tick_count;
 
-        // 每 10 次打印队列快照
-        if (++tick_count % 10 == 0) {
-            std::cout << sched->mlfq_.to_string();
+        // 队列全空 + 无 READY 进程 → 自动停止
+        bool all_empty = true;
+        for (int i = 0; i < MLFQ_LEVELS; ++i)
+            if (sched->mlfq_.size(i) > 0) { all_empty = false; break; }
+        if (all_empty) {
+            bool has_ready = false;
+            for (int p : sched->proc_mgr_.get_all_pids()) {
+                PCB* pcb = sched->proc_mgr_.get_pcb_mutable(p);
+                if (pcb && pcb->state == ProcessState::READY) { has_ready = true; break; }
+            }
+            if (!has_ready) {
+                std::cout << "[调度] 所有任务执行完毕，调度器自动停止。" << std::endl;
+                sched->running_ = false;
+                break;
+            }
         }
 
         int ms = static_cast<int>(2000 * sched->speed_mult_);
-        if (ms < 200) ms = 200;
+        if (ms < 50) ms = 50;
         Sleep(ms);
     }
 
-    std::cout << "[调度] 调度线程退出。" << std::endl;
+    std::cout << "[调度] 共 " << tick_count << " 次调度，线程退出。" << std::endl;
     return 0;
 }
 #endif
