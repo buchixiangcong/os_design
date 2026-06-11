@@ -3,6 +3,7 @@
 #include "memory/memory_manager.h"
 #include <iostream>
 #include <sstream>
+#include <algorithm>
 #include <chrono>
 #include <thread>
 
@@ -91,8 +92,17 @@ std::string Scheduler::execute_one_tick() {
         // burst_remain 归零 → 自动终止
         if (pcb->burst_remain <= 0) {
             mlfq_.remove(next_pid);
+            if (pcb->mem_addr >= 0 && pcb->mem_size > 0)
+                mem_mgr_.free_mem(pcb->mem_addr);
+            if (pcb->ppid != 0) {
+                PCB* parent = proc_mgr_.get_pcb_mutable(pcb->ppid);
+                if (parent) {
+                    auto& sib = parent->children;
+                    sib.erase(std::remove(sib.begin(), sib.end(), next_pid), sib.end());
+                }
+            }
             pcb->state = ProcessState::TERMINATED;
-            log << "  [完成] 任务执行完毕，进程自动终止!\n";
+            log << "  [完成] 任务执行完毕，进程自动终止，内存已回收!\n";
         }
         // 降级或轮转
         else if (current_level < MLFQ_LEVELS - 1) {
@@ -296,9 +306,18 @@ std::string Scheduler::tick() {
 
     // burst_remain 归零 → 进程自动终止
     if (pcb->burst_remain <= 0) {
-        pcb->state = ProcessState::READY;  // 临时设一下防止 check 报错
-        // 从所有队列移除
         mlfq_.remove(pid);
+        // 释放内存
+        if (pcb->mem_addr >= 0 && pcb->mem_size > 0)
+            mem_mgr_.free_mem(pcb->mem_addr);
+        // 从父进程子列表移除
+        if (pcb->ppid != 0) {
+            PCB* parent = proc_mgr_.get_pcb_mutable(pcb->ppid);
+            if (parent) {
+                auto& sib = parent->children;
+                sib.erase(std::remove(sib.begin(), sib.end(), pid), sib.end());
+            }
+        }
         pcb->state = ProcessState::TERMINATED;
         oss << " [完成!]";
         return oss.str();
